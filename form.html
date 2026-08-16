@@ -2925,6 +2925,63 @@
           display: none;
         }
       }
+
+      /* v20 — resilient submission feedback */
+      .submission-error {
+        display: none;
+        align-items: flex-start;
+        gap: 12px;
+        margin-top: 14px;
+        padding: 13px 14px;
+        border: 1px solid rgba(243, 197, 75, 0.42);
+        border-radius: 14px;
+        background: linear-gradient(
+          110deg,
+          rgba(243, 197, 75, 0.09),
+          rgba(13, 11, 5, 0.95) 58%,
+          rgba(243, 197, 75, 0.025)
+        );
+        color: #f3c54b;
+        box-shadow:
+          0 14px 36px rgba(0, 0, 0, 0.24),
+          inset 0 1px 0 rgba(255, 255, 255, 0.03);
+      }
+
+      .submission-error.show {
+        display: flex;
+        animation: errorCardIn 0.38s cubic-bezier(0.2, 0.9, 0.2, 1) both;
+      }
+
+      .submission-error-icon {
+        width: 28px;
+        height: 28px;
+        flex: 0 0 auto;
+        display: grid;
+        place-items: center;
+        border: 1px solid currentColor;
+        border-radius: 50%;
+        font: 900 14px/1 system-ui;
+        box-shadow: 0 0 0 0 rgba(243, 197, 75, 0.25);
+        animation: errorPulse 1.55s ease-out infinite;
+      }
+
+      .submission-error strong {
+        display: block;
+        color: #ffe39a;
+        font:
+          800 11px/1.25 ui-monospace,
+          monospace;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .submission-error small {
+        display: block;
+        margin-top: 5px;
+        color: #c9b678;
+        font-size: 11px;
+        line-height: 1.5;
+      }
     </style>
   </head>
   <body>
@@ -3189,6 +3246,22 @@
                 <button class="btn" data-prev>Back</button
                 ><button class="btn main" id="submit">Submit Entry</button>
               </div>
+              <div
+                class="submission-error"
+                id="submissionError"
+                role="status"
+                aria-live="polite"
+              >
+                <span class="submission-error-icon">!</span>
+                <div>
+                  <strong>Connection interrupted</strong>
+                  <small>
+                    We couldn't confirm the response from the server. Your entry
+                    may already have been received. Check your connection before
+                    trying again — duplicate entries are safely ignored.
+                  </small>
+                </div>
+              </div>
             </div>
             <div class="step" data-step="6">
               <div class="eyebrow">Entry received</div>
@@ -3229,7 +3302,7 @@
     </div>
     <script>
       const ENDPOINT =
-        "https://script.google.com/macros/s/AKfycbwgea6LhT5lwBCGZuvJnoC6woDGzpluvUPv354SWacVBs_3kG56_Q-pMEPma-RgMgmu/exec";
+        "https://script.google.com/macros/s/AKfycbxgdWl9H07yyNsyKbN7Qa1cquSdetMOh37awxL_jSMQW9uGbwW8EkBERtBaKdN80qvh/exec";
       let current = 1;
       const steps = [...document.querySelectorAll(".step")],
         bars = [...document.querySelectorAll("#progress span")];
@@ -3445,29 +3518,52 @@
           $("walletErr").style.display = "block";
           return;
         }
+
         $("walletErr").style.display = "none";
+
+        const submissionError = $("submissionError");
+        if (submissionError) submissionError.classList.remove("show");
+
         // Only these two values are sent to Google Sheets.
         const payload = {
           handle: $("handle").value.trim().replace(/^@/, ""),
           wallet: v,
         };
+
         $("submit").disabled = true;
         $("submit").textContent = "Submitting…";
+
         try {
-          if (ENDPOINT.startsWith("http"))
-            await fetch(ENDPOINT, {
-              method: "POST",
-              mode: "no-cors",
-              body: new URLSearchParams(payload),
-            });
+          if (!ENDPOINT.startsWith("http")) {
+            throw new Error("Backend endpoint is not configured.");
+          }
+
+          /*
+           * Apps Script is cross-origin, so this request intentionally uses
+           * no-cors. The browser receives an opaque response and cannot read
+           * the JSON body, but it can still tell us whether the request was
+           * successfully handed off at the network layer.
+           *
+           * keepalive helps the request finish on mobile / unstable networks.
+           */
+          await fetch(ENDPOINT, {
+            method: "POST",
+            mode: "no-cors",
+            keepalive: true,
+            body: new URLSearchParams(payload),
+          });
+
           show(6);
+
           const receiptStatus = document.querySelector(".receipt .status");
           const completeActions = $("completeActions");
           if (completeActions) completeActions.classList.remove("show");
+
           receiptStatus.textContent = "CHECKING…";
           $("rHandle").textContent = "@" + payload.handle;
           $("rWallet").textContent =
             payload.wallet.slice(0, 6) + "…" + payload.wallet.slice(-4);
+
           setTimeout(() => (receiptStatus.textContent = "VERIFYING…"), 2500);
           setTimeout(() => {
             receiptStatus.textContent = "TASK COMPLETED";
@@ -3475,11 +3571,23 @@
             launchCompletionConfetti();
           }, 5000);
         } catch (e) {
+          console.warn("Whitelist submission response was not confirmed:", e);
+
           $("submit").disabled = false;
-          $("submit").textContent = "Submit Entry ";
-          alert(
-            "Submission could not be sent. Check the backend URL in form.html.",
-          );
+          $("submit").textContent = "Try Again";
+
+          /*
+           * A network failure can happen AFTER Apps Script has already written
+           * the row. Do not claim the submission definitely failed.
+           * Code.gs now de-duplicates retries by X username or wallet.
+           */
+          if (submissionError) {
+            submissionError.classList.add("show");
+            submissionError.scrollIntoView({
+              behavior: "smooth",
+              block: "nearest",
+            });
+          }
         }
       });
 
